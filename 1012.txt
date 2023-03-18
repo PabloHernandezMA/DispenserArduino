@@ -1,0 +1,558 @@
+//|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+
+//  ▒█▀▀▄ ▀█▀ ▒█▀▀▀█ ▒█▀▀█ ▒█▀▀▀ ▒█▄░▒█ ▒█▀▀▀█ ▒█▀▀▀ ▒█▀▀█
+//  ▒█░▒█ ▒█░ ░▀▀▀▄▄ ▒█▄▄█ ▒█▀▀▀ ▒█▒█▒█ ░▀▀▀▄▄ ▒█▀▀▀ ▒█▄▄▀
+//  ▒█▄▄▀ ▄█▄ ▒█▄▄▄█ ▒█░░░ ▒█▄▄▄ ▒█░░▀█ ▒█▄▄▄█ ▒█▄▄▄ ▒█░▒█
+//
+//  ▒█▀▀█ ▒█▀▀▀█ ▒█▄░▒█
+//  ▒█░░░ ▒█░░▒█ ▒█▒█▒█
+//  ▒█▄▄█ ▒█▄▄▄█ ▒█░░▀█
+//
+//  ░█▀▀█ ▒█▀▀█ ▒█▀▀▄ ▒█░▒█ ▀█▀ ▒█▄░▒█ ▒█▀▀▀█
+//  ▒█▄▄█ ▒█▄▄▀ ▒█░▒█ ▒█░▒█ ▒█░ ▒█▒█▒█ ▒█░░▒█
+//  ▒█░▒█ ▒█░▒█ ▒█▄▄▀ ░▀▄▄▀ ▄█▄ ▒█░░▀█ ▒█▄▄▄█
+
+
+//  𝔸𝕦𝕥𝕠𝕣𝕖𝕤: 𝐇𝐞𝐫𝐧𝐚𝐧𝐝𝐞𝐳 𝐏𝐚𝐛𝐥𝐨 𝐲 𝐃𝐚𝐧𝐢𝐞𝐥 𝐒𝐚𝐧𝐭𝐢𝐚𝐠𝐨
+//  ℂ𝕦𝕣𝕤𝕠:   𝟓°𝐀
+//|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+#include <Separador.h>
+#include <SPI.h>
+#include <Ethernet.h>
+#include <SD.h>
+#include <Servo.h>
+#include <DS3231.h>
+#include <Wire.h>
+//|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+// tamaño del búfer utilizado para capturar solicitudes HTTP
+#define REQ_BUF_SZ   90
+// tamaño del búfer que almacena la cadena entrante
+#define TXT_BUF_SZ   50
+
+Separador s;
+File myFile;
+
+char serv[] = "dispenser2043.000webhostapp.com";
+const int infrarojo = 22;
+
+char *horas[4] = {};
+long nhoras = (sizeof(horas) / sizeof(char *));
+bool h12;
+bool PM;
+DS3231 Clock;
+
+int pos = 70; //posicion inicial motores azul y verde
+Servo servoA; //motor azul
+Servo servoV; //motor verde
+//Pines para mover la valvula y el tubo
+int izqA = 2; //Abir valvula
+int izqB = 8; //inclinar tubo para el lado verde
+int derA = 3; //Cerrar valvula
+int derB = 5; //inclinar tubo para el lado azul
+int vel = 255; // Velocidad de los motores (0-255)
+
+byte year, month, date, DoW, hour, minute, second;
+
+// Dirección MAC de la pegatina del shield Ethernet debajo de la placa
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+IPAddress ip(192, 168, 0, 18);   // dirección IP, debera ser cambiada
+EthernetServer server(80);       // usa el puerto 80 porque es el que esta siempre abierto por defecto en todos los modem
+File webFile;                    // archivo de la pagina en la sd
+char HTTP_req[REQ_BUF_SZ] = {0}; // solicitud HTTP almacenada almacenada como cadena terminada en nulo
+char req_index = 0;              // index en el búfer HTTP_req
+char txt_buf[TXT_BUF_SZ] = {0};  // buffer para guardar texto
+
+
+
+
+#define S0 24
+#define S1 26
+#define S2 25
+#define S3 27
+#define salidaSensor 23
+
+// Para guardar las frecuencias de los fotodiodos
+int frecuenciaRojo = 0;
+int frecuenciaVerde = 0;
+int frecuenciaAzul = 0;
+int colorRojo;
+int colorVerde;
+int colorAzul;
+//|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+void setup()
+{
+  // pines como salida sensor de color
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+
+  // Definiendo salidaSensor como entrada
+  pinMode(salidaSensor, INPUT);
+
+  // Definiendo la escala de frecuencia a 20%
+  digitalWrite(S0, HIGH);
+  digitalWrite(S1, LOW);
+
+  //Pines para motor tubo y valvula conectados al l293d
+  pinMode(derA, OUTPUT);
+  pinMode(derB, OUTPUT);
+  pinMode(izqA, OUTPUT);
+  pinMode(izqB, OUTPUT);
+
+  // deshabilitar chip Ethernet
+  pinMode(10, OUTPUT);
+  digitalWrite(10, HIGH);
+  pinMode(infrarojo , INPUT);
+  Serial.begin(9600);       // for debugging
+
+  Serial.print("Iniciando SD ...");
+  if (!SD.begin(4)) {
+    Serial.println("No se pudo inicializar");
+    return;
+  }
+  Serial.println("inicializacion exitosa");
+  // check for INDEX~1.HTM file
+  if (!SD.exists("INDEX~1.HTM")) {
+    Serial.println("ERROR: no se puede encontrar el archivo INDEX ~ 1.HTM.");
+    return;  // can't find index file
+  }
+  Serial.println("ÉXITO - Se encontró el archivo INDEX ~ 1.HTM.");
+
+  Ethernet.begin(mac, ip);  // inicializar dispositivo Ethernet
+  server.begin();           // empieza a escuchar a los clientes
+  if (!SD.exists("test.txt")) {
+    Serial.println("ERROR - ¡No se puede encontrar el archivo test.txt!");
+    return;
+  }
+  Serial.println("ÉXITO - Se encontró el archivo test.txt.");
+  serialEvent();
+  Wire.begin();
+}
+//|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+void loop() {
+  delay(1000);
+  Clock.getTime(year, month, date, DoW, hour, minute, second);
+  if (deboGirar() == 1)
+    girar();
+  EthernetClient client = server.available();  // intenta conseguir cliente
+
+  if (client) {  // got client?
+    boolean currentLineIsBlank = true;
+    while (client.connected()) {
+      if (client.available()) {   // datos del cliente disponibles para leer
+        char c = client.read(); // leer 1 byte (caracter) del cliente
+        // limita el tamaño de la solicitud HTTP recibida almacenada
+        // almacena la primera parte de la solicitud HTTP en la matriz HTTP_req (cadena)
+        // deja el último elemento en la matriz como 0 para terminar la cadena nula (REQ_BUF_SZ - 1)
+        if (req_index < (REQ_BUF_SZ - 1)) {
+          HTTP_req[req_index] = c;          // guardar el carácter de solicitud HTTP
+          req_index++;
+        }
+        // la última línea de solicitud del cliente está en blanco y termina con \ n
+        // responde al cliente solo después de la última línea recibida
+        if (c == '\n' && currentLineIsBlank) {
+          // send a standard http response header
+          client.println("HTTP/1.1 200 OK");
+          // el resto del encabezado sigue a continuación, dependiendo de si:
+          // se solicita página web o página XML
+          // Solicitud de Ajax - enviar archivo XML
+          if (StrContains(HTTP_req, "ajax_inputs")) {
+            // enviar resto del encabezado HTTP
+            client.println("Content-Type: text/xml");
+            client.println("Connection: keep-alive");
+            client.println();
+
+            // si se recibe un mensaje se imprime y se sobreescribe el archivo donde se guardan los horarios
+            if (GetText(txt_buf, TXT_BUF_SZ)) {
+              Serial.println("\r\nTexto Recibido:");
+              Serial.println(txt_buf); //"txt_buf" es el texto recibido
+              SD.remove("test.txt");
+              if (SD.exists("test.txt")) { //Si el archivo aún existe, aparece el mensaje
+                Serial.println("El test.txt aún existe.");
+              } else { //Si el archivo se eliminó correctamente, muestre el mensaje de que el archivo ya se eliminó.
+                Serial.println("El test.txt no existe.");
+              }
+
+              myFile = SD.open("test.txt", FILE_WRITE);
+
+              // si el archivo se abrió bien, escríbalo:
+              if (myFile) {
+                Serial.print("Escribiendo a test.txt...");
+                myFile.println(txt_buf);
+                // cierra el archivo:
+                myFile.close();
+                Serial.println("Hecho.");
+              } else {
+                // Si el archivo no se abrió, imprima un error:
+                Serial.println("error al abrir test.txt");
+              }
+              // Vuelva a abrir el archivo para leerlo:
+              myFile = SD.open("test.txt");
+              if (myFile) {
+                // lea del archivo hasta que no haya nada más en él:
+                while (myFile.available()) {
+                  Serial.write(myFile.read());
+                }
+                // cierra el archivo:
+                myFile.close();
+              } else {
+                // Si el archivo no se abrió, imprima un error:
+                Serial.println("error al abrir test.txt");
+              }
+            }
+          }
+          else {  // solicitud de página web
+            // enviar resto del encabezado HTTP
+            client.println("Content-Type: text/html");
+            client.println("Connection: keep-alive");
+            client.println();
+            // send web page
+            webFile = SD.open("INDEX~1.HTM");        // abrir archivo de página web
+            if (webFile) {
+              while (webFile.available()) {
+                client.write(webFile.read()); // enviar página web al cliente
+              }
+              webFile.close();
+            }
+          }
+          // restablecer el índice del búfer y todos los elementos del búfer a 0
+          req_index = 0;
+          StrClear(HTTP_req, REQ_BUF_SZ);
+          break;
+        }
+        // cada línea de texto recibida del cliente termina con \ r \ n
+        if (c == '\n') {
+          // último carácter en la línea del texto recibido
+          // comienza una nueva línea con el siguiente carácter leído
+          currentLineIsBlank = true;
+        }
+        else if (c != '\r') {
+          //se recibió un carácter de texto del cliente
+          currentLineIsBlank = false;
+        }
+      } // end if (client.available())
+    } // end while (client.connected())
+    delay(1);      // dar tiempo al navegador web para recibir los datos
+    client.stop(); // cierra la conexión
+  } // end if (client)
+
+  //---------------------------------------------------------------------------------------------ENVIAR CORREO
+  int value = 0;
+  value = digitalRead(infrarojo );  //lectura digital de pin
+  delay(300);
+  if (value == LOW) {
+    // start the Ethernet connection:
+    if (Ethernet.begin(mac) == 0) {
+      if (Ethernet.linkStatus() == LinkOFF) {
+        Serial.println("El cable de Ethernet no está conectado.");
+      }
+      // intentando congifurar usando la dirección IP en lugar de DHCP:
+      Ethernet.begin(mac, ip);
+    } else {
+      Serial.print("  IP asignada por DHCP ");
+      Serial.println(Ethernet.localIP());
+    }
+    // dele al escudo Ethernet un segundo para inicializar:
+    delay(1000);
+    Serial.print("conectado a ");
+    Serial.print(serv);
+    Serial.println("...");
+
+    // Si obtiene una conexión, informe de nuevo a través de serie:
+    if (client.connect(serv, 80)) {
+      Serial.print("conectado a ");
+      Serial.println(client.remoteIP());
+      // Hacer una solicitud HTTP:
+      client.println("GET /correo/mail.php HTTP/1.1");
+      client.println("Host: dispenser2043.000webhostapp.com");
+      client.println("Connection: close");
+      client.println();
+    } else {
+      // si no obtuviste una conexión al servidor:
+      Serial.println("la conexión falló");
+    }
+  }
+  //---------------------------------------------------------------------------------------------
+  digitalWrite(S2, LOW);
+  digitalWrite(S3, LOW);
+  frecuenciaRojo = pulseIn(salidaSensor, LOW);
+  colorRojo = map(frecuenciaRojo, 70, 120, 255, 0);
+  //Serial.print("R = ");
+  //Serial.print(colorRojo);
+  delay(100);
+  digitalWrite(S2, HIGH);
+  digitalWrite(S3, HIGH);
+  frecuenciaVerde = pulseIn(salidaSensor, LOW);
+  colorVerde = map(frecuenciaVerde, 70, 120, 255, 0);
+  //Serial.print("G = ");
+  //Serial.print(colorVerde);
+  delay(100);
+  digitalWrite(S2, LOW);
+  digitalWrite(S3, HIGH);
+  frecuenciaAzul = pulseIn(salidaSensor, LOW);
+  colorAzul = map(frecuenciaAzul, 70, 120, 255, 0);
+  //Serial.print("B = ");
+  //Serial.print(colorAzul);
+  delay(100);
+
+  if (colorRojo > colorVerde && colorRojo > colorAzul) {
+    Serial.println(" - Detectado ROJO");
+  }
+  if (colorVerde > colorRojo && colorVerde > colorAzul) {
+    Serial.println(" - Detectado VERDE");
+    servoV.attach(6);
+    for (pos = 30; pos <= 110; pos += 1) {
+      // in steps of 1 degree
+      servoV.write(pos);
+      delay(20);
+    }
+    delay(2000);
+    for (pos = 110; pos >= 30; pos -= 1) {
+      servoV.write(pos);
+      delay(20);
+    }
+    servoV.detach();
+  }
+  if (colorAzul > colorRojo && colorAzul > colorVerde) {
+    Serial.println(" - Detectado AZUL");
+    servoA.attach(7); //conecto el servo
+    for (pos = 110; pos <= 30; pos += 1) { //Abrir puerta azul
+      // in steps of 1 degree
+      servoA.write(pos);              // Le dice al servo de ir hasta la "POScicion"
+      delay(20);                      //espera a que llegue
+    }
+    delay(2000);
+    for (pos = 30; pos >= 110; pos -= 1) { //Cerrar puerta
+      servoA.write(pos);                   //Le dice al servo de ir hasta la "POScicion"
+      delay(20);                           //espera a que llegue
+    }
+    servoA.detach(); //desconecto el servo
+  }
+
+}
+//||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||> FIN VOID LOOP
+void girar() {
+  //este evento: abre la valvula
+  //gira el tubo para que la comida caiga en la caja verde
+  //gira el tubo para que la comida caiga en la caja azul
+  //cierra la valvula
+  analogWrite(derB, 200);  // verde
+  analogWrite(izqB, 0);
+  delay (2000);
+
+  Serial.print("dispensando...");
+  analogWrite(derA, 0);     //abrir tapa
+  analogWrite(izqA, vel);
+  delay (1200);
+  analogWrite(derA, vel);   //cerrar tapa
+  analogWrite(izqA, 0);
+  delay (1000);
+  analogWrite(derA, 0);     //abrir tapa
+  analogWrite(izqA, vel);
+  delay (1200);
+  analogWrite(derA, vel);   //cerrar tapa
+  analogWrite(izqA, 0);
+  delay (1000);
+
+  analogWrite(derB, 0);    // azul
+  analogWrite(izqB, 200);
+  delay(2000);
+
+  analogWrite(derA, 0);     //abrir tapa
+  analogWrite(izqA, vel);
+  delay (1200);
+  analogWrite(derA, vel);   //cerrar tapa
+  analogWrite(izqA, 0);
+  delay (1000);
+  analogWrite(derA, 0);     //abrir tapa
+  analogWrite(izqA, vel);
+  delay (1200);
+  analogWrite(derA, vel);   //cerrar tapa
+  analogWrite(izqA, 0);
+  delay (1000);
+  delay(52800);
+  Serial.print("fin");
+}
+
+int deboGirar() {
+  //esta variable estará comparando los horarios del char horas
+  //con la hora que marque el reloj. Cuando coincidan devuelve un 1
+
+  String h = "";
+  String m = "";
+  myFile = SD.open("test.txt");//abrimos  el archivo
+  if (myFile) {
+    Serial.println("test.txt");
+    while (myFile.available()) {
+
+      String RECIBO = myFile.readString();
+      for (int i = 0; i < nhoras; i++) {
+        String R = s.separa(RECIBO, ',', i);
+        horas[i] = R.c_str();
+        h = getValue(horas[i], ':', 0);
+        m = getValue(horas[i], ':', 1);
+
+        Serial.print("hora" + String(i) + ": ");
+        Serial.print(h);
+        Serial.print(".");
+        Serial.println(m);
+
+        hour = Clock.getHour(h12, PM);
+        if (int(hour) == atoi(h.c_str()) && int(minute) == atoi(m.c_str())) {
+          return 1;
+        }
+      }
+
+    }
+    myFile.close(); //cerramos el archivo
+  } else {
+    Serial.println("Error al abrir el archivo");
+  }
+  return 0;
+
+}
+
+String getValue(String data, char separator, int index)
+{
+  int found = 0;
+  int strIndex[] = { 0, -1 };
+  int maxIndex = data.length() - 1;
+
+  for (int i = 0; i <= maxIndex && found <= index; i++) {
+    if (data.charAt(i) == separator || i == maxIndex) {
+      found++;
+      strIndex[0] = strIndex[1] + 1;
+      strIndex[1] = (i == maxIndex) ? i + 1 : i;
+    }
+  }
+  return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
+}
+
+void serialEvent() {
+  //en este evento se abre el archivo donde se guardan los horarios
+  //lo lee, separa los datos y los manda al char horas
+  myFile = SD.open("test.txt");//abrimos  el archivo
+  if (myFile) {
+    // Serial.println("test.txt");
+    while (myFile.available()) {
+      // Serial.write(myFile.read());
+      String RECIBO = myFile.readString();
+      String R1 = s.separa(RECIBO, ',', 0);
+      String R2 = s.separa(RECIBO, ',', 1);
+      String R3 = s.separa(RECIBO, ',', 2);
+      String R4 = s.separa(RECIBO, ',', 3);
+      for (int i = 0; i != 4; i++) {
+        String R = s.separa(RECIBO, ',', i);
+        horas[i] = R.c_str();
+        Serial.print("Lugar" + String(i) + ":");
+        Serial.println(horas[i]);
+      }
+      Serial.println("-------------------------");
+      Serial.println("r1:" + R1 );
+      Serial.println("r2:" + R2 );
+      Serial.println("r3:" + R3 );
+      Serial.println("r4:" + R4 );
+    }
+    myFile.close(); //cerramos el archivo
+  } else {
+    Serial.println("Error al abrir el archivo");
+  }
+}
+//-----------------------------------------------------
+// extraer texto de la cadena de datos HTTP GET entrante
+// devuelve verdadero solo si se recibió texto
+// la cadena debe comenzar con "& txt =" y terminar con "& end"
+// si la cadena es demasiado larga para el búfer HTTP_req y
+// "& end" se corta, luego la función devuelve false
+boolean GetText(char *txt, int len)
+{
+  boolean got_text = false;    // bandera texto recibido
+  char *str_begin;             // puntero al inicio del texto
+  char *str_end;               // puntero al final del texto
+  int str_len = 0;
+  int txt_index = 0;
+
+  // obtener el puntero al comienzo del texto
+  str_begin = strstr(HTTP_req, "&txt=");
+  if (str_begin != NULL) {
+    str_begin = strstr(str_begin, "=");  // saltar a la =
+    str_begin += 1;                      // saltear el =
+    str_end = strstr(str_begin, "&end");
+    if (str_end != NULL) {
+      str_end[0] = 0;  // terminar el string
+      str_len = strlen(str_begin);
+
+      // copie la cadena al búfer txt y reemplace% 20 con espacio ''
+      for (int i = 0; i < str_len; i++) {
+        if (str_begin[i] != '%') {
+          if (str_begin[i] == 0) {
+            // end of string
+            break;
+          }
+          else {
+            txt[txt_index++] = str_begin[i];
+            if (txt_index >= (len - 1)) {
+              // mantener la cadena de salida dentro de los límites
+              break;
+            }
+          }
+        }
+        else {
+          // reemplazar% 20 con un espacio
+          if ((str_begin[i + 1] == '2') && (str_begin[i + 2] == '0')) {
+            txt[txt_index++] = ' ';
+            i += 2;
+            if (txt_index >= (len - 1)) {
+              // mantener la cadena de salida dentro de los límites
+              break;
+            }
+          }
+        }
+      }
+      // terminar el string
+      txt[txt_index] = 0;
+      got_text = true;
+    }
+  }
+
+  return got_text;
+}
+
+// establece cada elemento de str en 0 (borra la matriz)
+void StrClear(char *str, char length)
+{
+  for (int i = 0; i < length; i++) {
+    str[i] = 0;
+  }
+}
+
+// busca la cadena sfind en el string str
+// devuelve 1 si se encuentra el string
+// devuelve 0 si no se encuentra el string
+char StrContains(char *str, char *sfind)
+{
+  char found = 0;
+  char index = 0;
+  char len;
+
+  len = strlen(str);
+
+  if (strlen(sfind) > len) {
+    return 0;
+  }
+  while (index < len) {
+    if (str[index] == sfind[found]) {
+      found++;
+      if (strlen(sfind) == found) {
+        return 1;
+      }
+    }
+    else {
+      found = 0;
+    }
+    index++;
+  }
+
+  return 0;
+}
